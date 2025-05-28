@@ -1,0 +1,1 @@
+{"name":"whys-cdn","version":"1.0.0","description":"CDN for Whys session recorder","main":"recorder.js","scripts":{"build":"echo No build needed"}}
