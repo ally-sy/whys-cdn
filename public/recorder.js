@@ -3,11 +3,11 @@
 
   // Configuration
   const CONFIG = {
-    API_ENDPOINT: 'http://127.0.0.1:54321/functions/v1/record-session', // Will be replaced in production
+    API_ENDPOINT: 'https://yyfmygwfyxeroqcyhoab.supabase.co/functions/v1/record-session', // Production endpoint
     BATCH_SIZE: 50,
     BATCH_TIMEOUT: 5000, // 5 seconds
     MAX_PAYLOAD_SIZE: 500 * 1024, // 500KB
-    DEBUG: true
+    DEBUG: false // Production mode
   };
 
   // Global state
@@ -33,19 +33,35 @@
   function getElementSelector(element) {
     if (!element) return null;
     
-    // Try to get a unique selector
-    if (element.id) {
-      return '#' + element.id;
-    }
-    
-    if (element.className) {
-      const classes = element.className.split(' ').filter(c => c.trim()).join('.');
-      if (classes) {
-        return element.tagName.toLowerCase() + '.' + classes;
+    try {
+      // Try to get a unique selector
+      if (element.id) {
+        return '#' + element.id;
       }
+      
+      // Handle className safely - it might not be a string for SVG elements
+      if (element.className) {
+        let classNames = '';
+        if (typeof element.className === 'string') {
+          classNames = element.className;
+        } else if (element.className.baseVal) {
+          // Handle SVG elements where className is an SVGAnimatedString
+          classNames = element.className.baseVal;
+        }
+        
+        if (classNames) {
+          const classes = classNames.split(' ').filter(c => c.trim()).join('.');
+          if (classes) {
+            return element.tagName.toLowerCase() + '.' + classes;
+          }
+        }
+      }
+      
+      return element.tagName ? element.tagName.toLowerCase() : 'unknown';
+    } catch (error) {
+      log('Error getting element selector:', error);
+      return 'unknown';
     }
-    
-    return element.tagName.toLowerCase();
   }
 
   function getElementText(element) {
@@ -95,45 +111,57 @@
   function setupEventListeners() {
     // Click events
     document.addEventListener('click', function(e) {
-      captureEvent('click', {
-        elementSelector: getElementSelector(e.target),
-        elementText: getElementText(e.target),
-        elementTag: e.target.tagName.toLowerCase(),
-        clickCoordinates: { x: e.clientX, y: e.clientY }
-      });
+      try {
+        captureEvent('click', {
+          elementSelector: getElementSelector(e.target),
+          elementText: getElementText(e.target),
+          elementTag: e.target && e.target.tagName ? e.target.tagName.toLowerCase() : 'unknown',
+          clickCoordinates: { x: e.clientX, y: e.clientY }
+        });
+      } catch (error) {
+        log('Error capturing click event:', error);
+      }
     }, true);
 
     // Scroll events (throttled)
     let scrollTimeout;
     document.addEventListener('scroll', function(e) {
-      clearTimeout(scrollTimeout);
-      scrollTimeout = setTimeout(() => {
-        captureEvent('scroll', {
-          scrollPosition: { x: window.scrollX, y: window.scrollY }
-        });
-      }, 100);
+      try {
+        clearTimeout(scrollTimeout);
+        scrollTimeout = setTimeout(() => {
+          captureEvent('scroll', {
+            scrollPosition: { x: window.scrollX, y: window.scrollY }
+          });
+        }, 100);
+      } catch (error) {
+        log('Error capturing scroll event:', error);
+      }
     }, true);
 
     // Input events (non-sensitive data only)
     document.addEventListener('input', function(e) {
-      const element = e.target;
-      
-      // Skip sensitive inputs
-      if (element.type === 'password' || 
-          element.type === 'email' || 
-          element.autocomplete === 'cc-number' ||
-          element.name?.toLowerCase().includes('password') ||
-          element.name?.toLowerCase().includes('credit') ||
-          element.name?.toLowerCase().includes('ssn')) {
-        return;
-      }
+      try {
+        const element = e.target;
+        
+        // Skip sensitive inputs
+        if (element.type === 'password' || 
+            element.type === 'email' || 
+            element.autocomplete === 'cc-number' ||
+            element.name?.toLowerCase().includes('password') ||
+            element.name?.toLowerCase().includes('credit') ||
+            element.name?.toLowerCase().includes('ssn')) {
+          return;
+        }
 
-      captureEvent('input', {
-        elementSelector: getElementSelector(element),
-        elementTag: element.tagName.toLowerCase(),
-        inputValue: element.value.length > 0 ? '[REDACTED]' : '', // Don't capture actual values
-        inputType: element.type
-      });
+        captureEvent('input', {
+          elementSelector: getElementSelector(element),
+          elementTag: element && element.tagName ? element.tagName.toLowerCase() : 'unknown',
+          inputValue: element.value && element.value.length > 0 ? '[REDACTED]' : '', // Don't capture actual values
+          inputType: element.type || 'unknown'
+        });
+      } catch (error) {
+        log('Error capturing input event:', error);
+      }
     }, true);
 
     // Page navigation
@@ -179,6 +207,12 @@
   // Data sending functions
   function sendBatch(useBeacon = false) {
     if (eventQueue.length === 0) return;
+    
+    // Validate session data before sending
+    if (!sessionData || !sessionData.projectId || !sessionData.sessionId) {
+      log('Invalid session data, skipping batch send:', sessionData);
+      return;
+    }
 
     const payload = {
       session: sessionData,
