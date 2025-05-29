@@ -85,6 +85,25 @@
     };
   }
 
+  // Anonymous user tracking
+  function getOrCreateAnonymousUserId() {
+    try {
+      let anonymousUserId = localStorage.getItem("whys_anonymous_user_id");
+      if (!anonymousUserId) {
+        anonymousUserId = "anon_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+        localStorage.setItem("whys_anonymous_user_id", anonymousUserId);
+        log("Created new anonymous user ID:", anonymousUserId);
+      } else {
+        log("Using existing anonymous user ID:", anonymousUserId);
+      }
+      return anonymousUserId;
+    } catch (error) {
+      log("Error with anonymous user ID:", error);
+      // Fallback to session-based ID if localStorage fails
+      return "anon_session_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
+    }
+  }
+
   // Event capture functions
   function captureEvent(eventType, data = {}) {
     if (!isInitialized || !sessionId) return;
@@ -305,7 +324,6 @@
         projectId: projectId,
         sessionId: sessionId,
         userId: userId,
-        anonymousUserId: getOrCreateAnonymousUserId(),
         pageUrl: window.location.href,
         userAgent: navigator.userAgent,
         screenResolution: `${screen.width}x${screen.height}`,
