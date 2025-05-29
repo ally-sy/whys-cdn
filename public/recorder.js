@@ -7,6 +7,8 @@
     BATCH_SIZE: 50,
     BATCH_TIMEOUT: 5000, // 5 seconds
     MAX_PAYLOAD_SIZE: 500 * 1024, // 500KB
+    INACTIVITY_TIMEOUT: 30 * 60 * 1000, // 30 minutes
+    INACTIVITY_CHECK_INTERVAL: 60 * 1000, // Check every minute
     DEBUG: false // Production mode
   };
 
@@ -18,6 +20,12 @@
   let eventQueue = [];
   let batchTimer = null;
   let sessionData = null;
+  let sessionEnded = false;
+  
+  // Activity tracking
+  let lastActivityTime = Date.now();
+  let inactivityTimer = null;
+  let visibilityTimer = null;
 
   // Utility functions
   function generateSessionId() {
@@ -104,9 +112,103 @@
     }
   }
 
+  // Activity tracking and session ending
+  function updateActivity() {
+    if (sessionEnded) return;
+    
+    lastActivityTime = Date.now();
+    log('Activity updated:', new Date(lastActivityTime).toISOString());
+    
+    // Reset inactivity timer
+    if (inactivityTimer) {
+      clearTimeout(inactivityTimer);
+    }
+    startInactivityTimer();
+  }
+
+  function startInactivityTimer() {
+    if (sessionEnded) return;
+    
+    inactivityTimer = setTimeout(() => {
+      if (!sessionEnded && Date.now() - lastActivityTime >= CONFIG.INACTIVITY_TIMEOUT) {
+        endSession('inactivity_timeout');
+      }
+    }, CONFIG.INACTIVITY_CHECK_INTERVAL);
+  }
+
+  function endSession(reason, additionalData = {}) {
+    if (sessionEnded) {
+      log('Session already ended, skipping');
+      return;
+    }
+    
+    sessionEnded = true;
+    log('Ending session with reason:', reason);
+    
+    // Clear timers
+    if (inactivityTimer) {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = null;
+    }
+    if (visibilityTimer) {
+      clearTimeout(visibilityTimer);
+      visibilityTimer = null;
+    }
+    
+    // Send session end event
+    captureEvent('session_end', {
+      reason: reason,
+      last_activity: new Date(lastActivityTime).toISOString(),
+      session_duration: Date.now() - (sessionData?.startTime || Date.now()),
+      ...additionalData
+    });
+    
+    // Force send remaining events
+    sendBatch(true);
+    
+    log('Session ended:', reason);
+  }
+
+  function handleVisibilityChange() {
+    if (sessionEnded) return;
+    
+    if (document.hidden) {
+      log('Page hidden - starting extended inactivity timer');
+      // When page is hidden, start a shorter timeout for inactivity
+      if (visibilityTimer) {
+        clearTimeout(visibilityTimer);
+      }
+      
+      visibilityTimer = setTimeout(() => {
+        if (document.hidden && !sessionEnded) {
+          endSession('tab_hidden_timeout', {
+            hidden_duration: CONFIG.INACTIVITY_TIMEOUT / 2 // 15 minutes when hidden
+          });
+        }
+      }, CONFIG.INACTIVITY_TIMEOUT / 2); // 15 minutes when tab is hidden
+      
+    } else {
+      log('Page visible - resetting activity');
+      // Page became visible again
+      if (visibilityTimer) {
+        clearTimeout(visibilityTimer);
+        visibilityTimer = null;
+      }
+      updateActivity();
+    }
+    
+    // Always capture visibility change
+    captureEvent('visibility', {
+      metadata: { 
+        hidden: document.hidden,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }
+
   // Event capture functions
   function captureEvent(eventType, data = {}) {
-    if (!isInitialized || !sessionId) return;
+    if (!isInitialized || !sessionId || sessionEnded) return;
 
     const event = {
       sessionId: sessionId,
@@ -118,6 +220,11 @@
 
     eventQueue.push(event);
     log('Event captured:', eventType, data);
+
+    // Update activity for user interaction events
+    if (['click', 'scroll', 'input', 'navigation'].includes(eventType)) {
+      updateActivity();
+    }
 
     // Check if we should send batch
     if (eventQueue.length >= CONFIG.BATCH_SIZE) {
@@ -202,19 +309,34 @@
     // Check for URL changes (for SPAs)
     setInterval(checkUrlChange, 1000);
 
-    // Page unload - send remaining events
+    // Page unload - send session end event
     window.addEventListener('beforeunload', function() {
-      if (eventQueue.length > 0) {
-        sendBatch(true); // Force send with beacon
+      if (!sessionEnded) {
+        endSession('page_unload');
       }
     });
 
-    // Visibility change
+    // Enhanced visibility change handling
     document.addEventListener('visibilitychange', function() {
-      captureEvent('visibility', {
-        metadata: { hidden: document.hidden }
-      });
+      handleVisibilityChange();
     });
+
+    // Additional activity tracking
+    document.addEventListener('keydown', function() {
+      updateActivity();
+    }, true);
+
+    document.addEventListener('mousemove', function() {
+      // Throttle mousemove to avoid excessive activity updates
+      if (!updateActivity.lastMouseMove || Date.now() - updateActivity.lastMouseMove > 5000) {
+        updateActivity();
+        updateActivity.lastMouseMove = Date.now();
+      }
+    }, true);
+
+    document.addEventListener('touchstart', function() {
+      updateActivity();
+    }, true);
   }
 
   function updateSessionUrl() {
@@ -324,16 +446,21 @@
         projectId: projectId,
         sessionId: sessionId,
         userId: userId,
+        anonymousUserId: getOrCreateAnonymousUserId(),
         pageUrl: window.location.href,
         userAgent: navigator.userAgent,
         screenResolution: `${screen.width}x${screen.height}`,
         viewportSize: `${window.innerWidth}x${window.innerHeight}`,
         deviceInfo: getDeviceInfo(),
-        metadata: config.metadata || {}
+        metadata: config.metadata || {},
+        startTime: Date.now()
       };
 
       // Setup event listeners
       setupEventListeners();
+      
+      // Start activity tracking
+      updateActivity();
       
       isInitialized = true;
       log('Initialized with projectId:', projectId, 'sessionId:', sessionId);
