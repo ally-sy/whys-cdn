@@ -17,6 +17,8 @@
   let projectId = null;
   let userId = null;
   let sessionId = null;
+  let visitorId = null;
+  let globalVisitorId = null;
   let eventQueue = [];
   let batchTimer = null;
   let sessionData = null;
@@ -28,8 +30,45 @@
   let visibilityTimer = null;
 
   // Utility functions
-  function generateSessionId() {
-    return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  function generateVisitorId(projectId) {
+    // Use UUID for project-scoped visitor ID
+    return crypto.randomUUID();
+  }
+
+  function generateGlobalVisitorId() {
+    // Use UUID for platform-wide visitor ID
+    return crypto.randomUUID();
+  }
+
+  function getOrCreateVisitorIds(projectId) {
+    try {
+      // Project-scoped visitor ID
+      const visitorKey = `whys_visitor_${projectId}`;
+      let visitorId = localStorage.getItem(visitorKey);
+      if (!visitorId) {
+        visitorId = generateVisitorId(projectId);
+        localStorage.setItem(visitorKey, visitorId);
+        log("Created new visitor ID:", visitorId);
+      }
+
+      // Global visitor ID (platform-wide)
+      const globalKey = 'whys_global_visitor';
+      let globalVisitorId = localStorage.getItem(globalKey);
+      if (!globalVisitorId) {
+        globalVisitorId = generateGlobalVisitorId();
+        localStorage.setItem(globalKey, globalVisitorId);
+        log("Created new global visitor ID:", globalVisitorId);
+      }
+
+      return { visitorId, globalVisitorId };
+    } catch (error) {
+      log("Error with visitor IDs:", error);
+      // Fallback to session-based IDs if localStorage fails
+      return {
+        visitorId: generateVisitorId(projectId),
+        globalVisitorId: generateGlobalVisitorId()
+      };
+    }
   }
 
   function log(...args) {
@@ -91,25 +130,6 @@
       viewportSize: `${window.innerWidth}x${window.innerHeight}`,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
     };
-  }
-
-  // Anonymous user tracking
-  function getOrCreateAnonymousUserId() {
-    try {
-      let anonymousUserId = localStorage.getItem("whys_anonymous_user_id");
-      if (!anonymousUserId) {
-        anonymousUserId = "anon_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
-        localStorage.setItem("whys_anonymous_user_id", anonymousUserId);
-        log("Created new anonymous user ID:", anonymousUserId);
-      } else {
-        log("Using existing anonymous user ID:", anonymousUserId);
-      }
-      return anonymousUserId;
-    } catch (error) {
-      log("Error with anonymous user ID:", error);
-      // Fallback to session-based ID if localStorage fails
-      return "anon_session_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9);
-    }
   }
 
   // Activity tracking and session ending
@@ -431,7 +451,12 @@
 
       projectId = config.projectId;
       userId = config.userId || null;
-      sessionId = generateSessionId();
+      sessionId = crypto.randomUUID(); // Use proper UUID for session
+
+      // Generate visitor IDs
+      const { visitorId: vid, globalVisitorId: gvid } = getOrCreateVisitorIds(projectId);
+      visitorId = vid;
+      globalVisitorId = gvid;
 
       // Override default config
       if (config.apiEndpoint) {
@@ -445,8 +470,9 @@
       sessionData = {
         projectId: projectId,
         sessionId: sessionId,
+        visitorId: visitorId,
+        globalVisitorId: globalVisitorId,
         userId: userId,
-        anonymousUserId: getOrCreateAnonymousUserId(),
         pageUrl: window.location.href,
         userAgent: navigator.userAgent,
         screenResolution: `${screen.width}x${screen.height}`,
@@ -463,7 +489,7 @@
       updateActivity();
       
       isInitialized = true;
-      log('Initialized with projectId:', projectId, 'sessionId:', sessionId);
+      log('Initialized with projectId:', projectId, 'sessionId:', sessionId, 'visitorId:', visitorId);
 
       // Send initial session data
       captureEvent('session_start', {
@@ -501,6 +527,14 @@
     // Internal methods for debugging
     _getSessionId: function() {
       return sessionId;
+    },
+
+    _getVisitorId: function() {
+      return visitorId;
+    },
+
+    _getGlobalVisitorId: function() {
+      return globalVisitorId;
     },
 
     _getEventQueue: function() {
