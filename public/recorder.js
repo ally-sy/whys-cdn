@@ -305,6 +305,7 @@
         projectId: projectId,
         sessionId: sessionId,
         userId: userId,
+        anonymousUserId: getOrCreateAnonymousUserId(),
         pageUrl: window.location.href,
         userAgent: navigator.userAgent,
         screenResolution: `${screen.width}x${screen.height}`,
