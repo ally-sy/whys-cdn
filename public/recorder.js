@@ -40,6 +40,52 @@
     return crypto.randomUUID();
   }
 
+  function getOrCreateSessionId(projectId) {
+    try {
+      // Check for existing active session in the last 30 minutes
+      const sessionKey = `whys_session_${projectId}`;
+      const sessionTimeKey = `whys_session_time_${projectId}`;
+      
+      const existingSessionId = localStorage.getItem(sessionKey);
+      const sessionTimeStr = localStorage.getItem(sessionTimeKey);
+      
+      if (existingSessionId && sessionTimeStr) {
+        const sessionTime = parseInt(sessionTimeStr);
+        const now = Date.now();
+        const thirtyMinutes = 30 * 60 * 1000;
+        
+        // If session is less than 30 minutes old, continue it
+        if (now - sessionTime < thirtyMinutes) {
+          log("Continuing existing session:", existingSessionId.substring(0, 8) + '...');
+          return existingSessionId;
+        } else {
+          log("Previous session expired, creating new one");
+        }
+      }
+      
+      // Create new session
+      const newSessionId = crypto.randomUUID();
+      localStorage.setItem(sessionKey, newSessionId);
+      localStorage.setItem(sessionTimeKey, Date.now().toString());
+      log("Created new session:", newSessionId.substring(0, 8) + '...');
+      
+      return newSessionId;
+    } catch (error) {
+      log("Error with session management:", error);
+      // Fallback to always new session if localStorage fails
+      return crypto.randomUUID();
+    }
+  }
+
+  function updateSessionActivity(projectId) {
+    try {
+      const sessionTimeKey = `whys_session_time_${projectId}`;
+      localStorage.setItem(sessionTimeKey, Date.now().toString());
+    } catch (error) {
+      log("Error updating session activity:", error);
+    }
+  }
+
   function getOrCreateVisitorIds(projectId) {
     try {
       // Project-scoped visitor ID
@@ -139,6 +185,11 @@
     lastActivityTime = Date.now();
     log('Activity updated:', new Date(lastActivityTime).toISOString());
     
+    // Update session activity timestamp for persistence
+    if (projectId) {
+      updateSessionActivity(projectId);
+    }
+    
     // Reset inactivity timer
     if (inactivityTimer) {
       clearTimeout(inactivityTimer);
@@ -173,6 +224,19 @@
     if (visibilityTimer) {
       clearTimeout(visibilityTimer);
       visibilityTimer = null;
+    }
+    
+    // Clean up session from localStorage
+    if (projectId) {
+      try {
+        const sessionKey = `whys_session_${projectId}`;
+        const sessionTimeKey = `whys_session_time_${projectId}`;
+        localStorage.removeItem(sessionKey);
+        localStorage.removeItem(sessionTimeKey);
+        log('Session cleaned up from localStorage');
+      } catch (error) {
+        log('Error cleaning up session:', error);
+      }
     }
     
     // Send session end event
@@ -451,7 +515,7 @@
 
       projectId = config.projectId;
       userId = config.userId || null;
-      sessionId = crypto.randomUUID(); // Use proper UUID for session
+      sessionId = getOrCreateSessionId(projectId);
 
       // Generate visitor IDs
       const { visitorId: vid, globalVisitorId: gvid } = getOrCreateVisitorIds(projectId);
