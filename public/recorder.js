@@ -23,6 +23,7 @@
   let batchTimer = null;
   let sessionData = null;
   let sessionEnded = false;
+  let initializationPromise = null; // Prevent concurrent initialization
   
   // Activity tracking
   let lastActivityTime = Date.now();
@@ -38,52 +39,6 @@
   function generateGlobalVisitorId() {
     // Use UUID for platform-wide visitor ID
     return crypto.randomUUID();
-  }
-
-  function getOrCreateSessionId(projectId) {
-    try {
-      // Check for existing active session in the last 30 minutes
-      const sessionKey = `whys_session_${projectId}`;
-      const sessionTimeKey = `whys_session_time_${projectId}`;
-      
-      const existingSessionId = localStorage.getItem(sessionKey);
-      const sessionTimeStr = localStorage.getItem(sessionTimeKey);
-      
-      if (existingSessionId && sessionTimeStr) {
-        const sessionTime = parseInt(sessionTimeStr);
-        const now = Date.now();
-        const thirtyMinutes = 30 * 60 * 1000;
-        
-        // If session is less than 30 minutes old, continue it
-        if (now - sessionTime < thirtyMinutes) {
-          log("Continuing existing session:", existingSessionId.substring(0, 8) + '...');
-          return existingSessionId;
-        } else {
-          log("Previous session expired, creating new one");
-        }
-      }
-      
-      // Create new session
-      const newSessionId = crypto.randomUUID();
-      localStorage.setItem(sessionKey, newSessionId);
-      localStorage.setItem(sessionTimeKey, Date.now().toString());
-      log("Created new session:", newSessionId.substring(0, 8) + '...');
-      
-      return newSessionId;
-    } catch (error) {
-      log("Error with session management:", error);
-      // Fallback to always new session if localStorage fails
-      return crypto.randomUUID();
-    }
-  }
-
-  function updateSessionActivity(projectId) {
-    try {
-      const sessionTimeKey = `whys_session_time_${projectId}`;
-      localStorage.setItem(sessionTimeKey, Date.now().toString());
-    } catch (error) {
-      log("Error updating session activity:", error);
-    }
   }
 
   function getOrCreateVisitorIds(projectId) {
@@ -114,6 +69,45 @@
         visitorId: generateVisitorId(projectId),
         globalVisitorId: generateGlobalVisitorId()
       };
+    }
+  }
+
+  function getOrCreateSessionId(projectId) {
+    try {
+      const sessionKey = `whys_session_${projectId}`;
+      const timestampKey = `whys_session_timestamp_${projectId}`;
+      
+      // Get existing session ID and timestamp
+      const existingSessionId = localStorage.getItem(sessionKey);
+      const existingTimestamp = localStorage.getItem(timestampKey);
+      
+      if (existingSessionId && existingTimestamp) {
+        const sessionAge = Date.now() - parseInt(existingTimestamp);
+        
+        // Check if session is still valid (not expired)
+        if (sessionAge < CONFIG.INACTIVITY_TIMEOUT) {
+          log("Continuing existing session:", existingSessionId, "Age:", Math.round(sessionAge / 60000), "minutes");
+          
+          // Update timestamp to extend session
+          localStorage.setItem(timestampKey, Date.now().toString());
+          return existingSessionId;
+        } else {
+          log("Session expired, creating new one. Age:", Math.round(sessionAge / 60000), "minutes");
+        }
+      }
+      
+      // Create new session
+      const newSessionId = crypto.randomUUID();
+      localStorage.setItem(sessionKey, newSessionId);
+      localStorage.setItem(timestampKey, Date.now().toString());
+      
+      log("Created new session:", newSessionId);
+      return newSessionId;
+      
+    } catch (error) {
+      log("Error with session ID management:", error);
+      // Fallback to generating new session
+      return crypto.randomUUID();
     }
   }
 
@@ -185,9 +179,14 @@
     lastActivityTime = Date.now();
     log('Activity updated:', new Date(lastActivityTime).toISOString());
     
-    // Update session activity timestamp for persistence
-    if (projectId) {
-      updateSessionActivity(projectId);
+    // Update session timestamp in localStorage to keep session alive
+    try {
+      if (projectId) {
+        const timestampKey = `whys_session_timestamp_${projectId}`;
+        localStorage.setItem(timestampKey, Date.now().toString());
+      }
+    } catch (error) {
+      log('Error updating session timestamp:', error);
     }
     
     // Reset inactivity timer
@@ -226,17 +225,18 @@
       visibilityTimer = null;
     }
     
-    // Clean up session from localStorage
-    if (projectId) {
-      try {
+    // Only clear session from localStorage for certain end reasons
+    // Keep session data for page_unload to allow continuation on refresh
+    try {
+      if (projectId && reason !== 'page_unload') {
         const sessionKey = `whys_session_${projectId}`;
-        const sessionTimeKey = `whys_session_time_${projectId}`;
+        const timestampKey = `whys_session_timestamp_${projectId}`;
         localStorage.removeItem(sessionKey);
-        localStorage.removeItem(sessionTimeKey);
-        log('Session cleaned up from localStorage');
-      } catch (error) {
-        log('Error cleaning up session:', error);
+        localStorage.removeItem(timestampKey);
+        log('Cleared session from localStorage');
       }
+    } catch (error) {
+      log('Error clearing session from localStorage:', error);
     }
     
     // Send session end event
@@ -258,18 +258,20 @@
     
     if (document.hidden) {
       log('Page hidden - starting extended inactivity timer');
-      // When page is hidden, start a shorter timeout for inactivity
+      // When page is hidden, start a much longer timeout for inactivity
+      // Only end session after a longer period when tab is hidden
       if (visibilityTimer) {
         clearTimeout(visibilityTimer);
       }
       
+      // Increased timeout to 2 hours when tab is hidden to avoid premature session ending
       visibilityTimer = setTimeout(() => {
         if (document.hidden && !sessionEnded) {
           endSession('tab_hidden_timeout', {
-            hidden_duration: CONFIG.INACTIVITY_TIMEOUT / 2 // 15 minutes when hidden
+            hidden_duration: CONFIG.INACTIVITY_TIMEOUT * 4 // 2 hours when hidden
           });
         }
-      }, CONFIG.INACTIVITY_TIMEOUT / 2); // 15 minutes when tab is hidden
+      }, CONFIG.INACTIVITY_TIMEOUT * 4); // 2 hours when tab is hidden
       
     } else {
       log('Page visible - resetting activity');
@@ -503,9 +505,15 @@
   // Public API
   const WhysRecorder = {
     init: function(config = {}) {
+      // Prevent concurrent initialization
+      if (initializationPromise) {
+        log('Initialization already in progress');
+        return initializationPromise;
+      }
+      
       if (isInitialized) {
-        log('Already initialized');
-        return;
+        log('Already initialized with sessionId:', sessionId);
+        return Promise.resolve();
       }
 
       // Validate required config
@@ -513,52 +521,71 @@
         throw new Error('WhysRecorder: projectId is required');
       }
 
-      projectId = config.projectId;
-      userId = config.userId || null;
-      sessionId = getOrCreateSessionId(projectId);
+      initializationPromise = new Promise((resolve) => {
+        try {
+          projectId = config.projectId;
+          userId = config.userId || null;
+          
+          // Reset session ended flag for new initialization
+          sessionEnded = false;
+          
+          sessionId = getOrCreateSessionId(projectId);
 
-      // Generate visitor IDs
-      const { visitorId: vid, globalVisitorId: gvid } = getOrCreateVisitorIds(projectId);
-      visitorId = vid;
-      globalVisitorId = gvid;
+          // Generate visitor IDs
+          const { visitorId: vid, globalVisitorId: gvid } = getOrCreateVisitorIds(projectId);
+          visitorId = vid;
+          globalVisitorId = gvid;
 
-      // Override default config
-      if (config.apiEndpoint) {
-        CONFIG.API_ENDPOINT = config.apiEndpoint;
-      }
-      if (config.debug !== undefined) {
-        CONFIG.DEBUG = config.debug;
-      }
+          // Override default config
+          if (config.apiEndpoint) {
+            CONFIG.API_ENDPOINT = config.apiEndpoint;
+          }
+          if (config.debug !== undefined) {
+            CONFIG.DEBUG = config.debug;
+          }
 
-      // Initialize session data
-      sessionData = {
-        projectId: projectId,
-        sessionId: sessionId,
-        visitorId: visitorId,
-        globalVisitorId: globalVisitorId,
-        userId: userId,
-        pageUrl: window.location.href,
-        userAgent: navigator.userAgent,
-        screenResolution: `${screen.width}x${screen.height}`,
-        viewportSize: `${window.innerWidth}x${window.innerHeight}`,
-        deviceInfo: getDeviceInfo(),
-        metadata: config.metadata || {},
-        startTime: Date.now()
-      };
+          // Initialize session data
+          sessionData = {
+            projectId: projectId,
+            sessionId: sessionId,
+            visitorId: visitorId,
+            globalVisitorId: globalVisitorId,
+            userId: userId,
+            pageUrl: window.location.href,
+            userAgent: navigator.userAgent,
+            screenResolution: `${screen.width}x${screen.height}`,
+            viewportSize: `${window.innerWidth}x${window.innerHeight}`,
+            deviceInfo: getDeviceInfo(),
+            metadata: config.metadata || {},
+            startTime: Date.now()
+          };
 
-      // Setup event listeners
-      setupEventListeners();
-      
-      // Start activity tracking
-      updateActivity();
-      
-      isInitialized = true;
-      log('Initialized with projectId:', projectId, 'sessionId:', sessionId, 'visitorId:', visitorId);
+          // Setup event listeners only once
+          if (!isInitialized) {
+            setupEventListeners();
+          }
+          
+          // Start activity tracking
+          updateActivity();
+          
+          isInitialized = true;
+          log('Initialized with projectId:', projectId, 'sessionId:', sessionId, 'visitorId:', visitorId);
 
-      // Send initial session data
-      captureEvent('session_start', {
-        metadata: { initialized: true }
+          // Send initial session data
+          captureEvent('session_start', {
+            metadata: { initialized: true }
+          });
+          
+          initializationPromise = null;
+          resolve();
+        } catch (error) {
+          log('Error during initialization:', error);
+          initializationPromise = null;
+          throw error;
+        }
       });
+      
+      return initializationPromise;
     },
 
     identify: function(newUserId) {
@@ -607,6 +634,31 @@
 
     _sendBatch: function() {
       sendBatch();
+    },
+
+    _getSessionStatus: function() {
+      if (!projectId) return { error: 'Not initialized' };
+      
+      try {
+        const sessionKey = `whys_session_${projectId}`;
+        const timestampKey = `whys_session_timestamp_${projectId}`;
+        const storedSessionId = localStorage.getItem(sessionKey);
+        const storedTimestamp = localStorage.getItem(timestampKey);
+        
+        return {
+          currentSessionId: sessionId,
+          storedSessionId: storedSessionId,
+          sessionMatches: sessionId === storedSessionId,
+          storedTimestamp: storedTimestamp ? new Date(parseInt(storedTimestamp)).toISOString() : null,
+          sessionAge: storedTimestamp ? Date.now() - parseInt(storedTimestamp) : null,
+          sessionExpiry: CONFIG.INACTIVITY_TIMEOUT,
+          isExpired: storedTimestamp ? (Date.now() - parseInt(storedTimestamp)) > CONFIG.INACTIVITY_TIMEOUT : true,
+          lastActivity: new Date(lastActivityTime).toISOString(),
+          sessionEnded: sessionEnded
+        };
+      } catch (error) {
+        return { error: error.message };
+      }
     }
   };
 
