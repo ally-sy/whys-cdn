@@ -85,7 +85,9 @@
         const sessionAge = Date.now() - parseInt(existingTimestamp);
         
         // Check if session is still valid (not expired)
-        if (sessionAge < CONFIG.INACTIVITY_TIMEOUT) {
+        // Allow much longer session continuity - up to 2 hours of inactivity
+        const maxInactivity = CONFIG.INACTIVITY_TIMEOUT * 4; // 2 hours
+        if (sessionAge < maxInactivity) {
           log("Continuing existing session:", existingSessionId, "Age:", Math.round(sessionAge / 60000), "minutes");
           
           // Update timestamp to extend session
@@ -507,13 +509,27 @@
     init: function(config = {}) {
       // Prevent concurrent initialization
       if (initializationPromise) {
-        log('Initialization already in progress');
+        log('Initialization already in progress, returning existing promise');
         return initializationPromise;
       }
       
       if (isInitialized) {
         log('Already initialized with sessionId:', sessionId);
-        return Promise.resolve();
+        
+        // Check if this is the same project
+        if (config.projectId && config.projectId === projectId) {
+          log('Same project, returning existing session');
+          return Promise.resolve();
+        }
+        
+        // Different project, need to reinitialize
+        if (config.projectId && config.projectId !== projectId) {
+          log('Different project detected, reinitializing');
+          isInitialized = false;
+          sessionEnded = false;
+        } else {
+          return Promise.resolve();
+        }
       }
 
       // Validate required config
