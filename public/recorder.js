@@ -583,6 +583,9 @@
             startTime: Date.now()
           };
 
+          // Ensure lastActivityTime is synchronized with session start
+          lastActivityTime = sessionData.startTime;
+
           // Setup event listeners only once
           if (!isInitialized) {
             setupEventListeners();
