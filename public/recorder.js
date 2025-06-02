@@ -227,10 +227,10 @@
       visibilityTimer = null;
     }
     
-    // Only clear session from localStorage for certain end reasons
-    // Keep session data for page_unload to allow continuation on refresh
+    // Always clear session from localStorage when session ends
+    // This ensures that closed tabs don't leave "active" sessions
     try {
-      if (projectId && reason !== 'page_unload') {
+      if (projectId) {
         const sessionKey = `whys_session_${projectId}`;
         const timestampKey = `whys_session_timestamp_${projectId}`;
         localStorage.removeItem(sessionKey);
@@ -401,6 +401,13 @@
     window.addEventListener('beforeunload', function() {
       if (!sessionEnded) {
         endSession('page_unload');
+      }
+    });
+
+    // Page hide - additional coverage for tab close scenarios
+    window.addEventListener('pagehide', function() {
+      if (!sessionEnded) {
+        endSession('page_hide');
       }
     });
 
