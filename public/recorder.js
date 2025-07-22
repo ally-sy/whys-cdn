@@ -1,3 +1,4 @@
+// Updated recorder code with enhanced initialization and validation
 /**
  * Whys Session Recorder with Phase 1 Fail-Safe Mechanisms
  * Version: 2.0.0-failsafe
@@ -369,7 +370,7 @@
           .replace(/([A-Z])/g, ' $1')
           .replace(/[_-]/g, ' ')
           .trim()
-          .replace(/\b\w/g, l => l.toUpperCase());
+          .replace(/\w/g, l => l.toUpperCase());
         
         if (nameText && nameText !== element.name) {
           label = nameText.substring(0, 100);
